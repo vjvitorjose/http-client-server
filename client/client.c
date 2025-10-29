@@ -11,7 +11,6 @@
 
 void parse_url(char *url, char *host, int *port, char *path) {
     char *url_no_http = url + 7;
-
     char *path_start = strchr(url_no_http, '/');
     
     if (path_start == NULL) {
@@ -19,7 +18,6 @@ void parse_url(char *url, char *host, int *port, char *path) {
         strcpy(host, url_no_http);
     } else {
         strcpy(path, path_start);
-        
         int host_len = path_start - url_no_http;
         strncpy(host, url_no_http, host_len);
         host[host_len] = '\0';
@@ -36,15 +34,8 @@ void parse_url(char *url, char *host, int *port, char *path) {
 
 char *get_filename_from_path(char *path) {
     char *last_slash = strrchr(path, '/');
-    
-    if (last_slash == NULL) {
-        return path; 
-    }
-
-    if (last_slash[1] == '\0') {
-        return NULL;
-    }
-
+    if (last_slash == NULL) return path;
+    if (last_slash[1] == '\0') return NULL;
     return last_slash + 1;
 }
 
@@ -69,42 +60,30 @@ int main(int argc, char *argv[]) {
 
     char *filename_from_url = get_filename_from_path(path);
     char output_filename[256];
-    char request_path[1024 + 12];
+    char request_path[1024];
     
-    int seeking_index = 0;
+    int is_directory_request = (filename_from_url == NULL || strlen(filename_from_url) == 0);
+    int trying_index = 0;
 
-    if (filename_from_url == NULL || strlen(filename_from_url) == 0) {
+    if (is_directory_request) {
         strcpy(output_filename, "index.html");
-        
         strcpy(request_path, path);
         if (request_path[strlen(request_path) - 1] != '/') {
             strcat(request_path, "/");
         }
         strcat(request_path, "index.html");
-        seeking_index = 1;
-        printf("Nenhum arquivo especificado. Buscando por: %s\n", request_path);
-
+        printf("Pasta detectada. Tentando baixar: %s\n", request_path);
+        trying_index = 1;
     } else {
         strcpy(output_filename, filename_from_url);
         strcpy(request_path, path);
     }
 
-    printf("Host: %s\nPorta: %d\nCaminho da Requisição: %s\nSalvando como: %s\n\n",
-           host, port, request_path, output_filename);
-
     struct hostent *server;
     struct sockaddr_in serv_addr;
-    int sockfd;
-
     server = gethostbyname(host);
     if (server == NULL) {
         fprintf(stderr, "Erro: Host não encontrado (%s)\n", host);
-        exit(1);
-    }
-
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("Erro ao abrir socket");
         exit(1);
     }
 
@@ -112,6 +91,18 @@ int main(int argc, char *argv[]) {
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(port);
     memcpy(&serv_addr.sin_addr.s_addr, server->h_addr_list[0], server->h_length);
+
+RequestAttempt:
+    printf("Host: %s\nPorta: %d\nCaminho da Requisição: %s\nSalvando como: %s\n\n",
+           host, port, request_path, output_filename);
+
+    int sockfd;
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        perror("Erro ao abrir socket");
+        exit(1);
+    }
+
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("Erro ao conectar");
         close(sockfd);
@@ -143,7 +134,6 @@ int main(int argc, char *argv[]) {
     while ((bytes_received = recv(sockfd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
         if (first_chunk) {
             buffer[bytes_received] = '\0';
-
             int http_status = 0;
             if (strncmp(buffer, "HTTP/", 5) == 0) {
                 sscanf(buffer, "HTTP/1.%*d %d", &http_status);
@@ -152,12 +142,21 @@ int main(int argc, char *argv[]) {
             if (http_status < 200 || http_status >= 300) {
                 fprintf(stderr, "Erro HTTP: Recebido status %d\n", http_status);
 
-                if (http_status == 404 && seeking_index) {
-                    fprintf(stderr, "Decisão: Arquivo não especificado e index.html não encontrado (404).\n");
-                } else if (http_status == 404) {
-                    fprintf(stderr, "Decisão: O arquivo solicitado (%s) não foi encontrado (404).\n", output_filename);
+                if (http_status == 404 && trying_index) {
+                    fprintf(stderr, "index.html não encontrado (404). Tentando listagem de diretório...\n\n");
+                    
+                    fclose(fp);
+                    remove(output_filename);
+                    close(sockfd);
+                    
+                    strcpy(output_filename, "listing.html");
+                    strcpy(request_path, path);
+                    trying_index = 0; 
+                    
+                    goto RequestAttempt;
                 }
-                
+
+                fprintf(stderr, "Decisão: O recurso solicitado (%s) não foi encontrado.\n", request_path);
                 fclose(fp);
                 remove(output_filename);
                 close(sockfd);
@@ -165,16 +164,12 @@ int main(int argc, char *argv[]) {
             }
 
             body_start = strstr(buffer, "\r\n\r\n");
-
             if (body_start != NULL) {
-                body_start += 4; 
-
+                body_start += 4;
                 int header_len = body_start - buffer;
                 int body_len_in_chunk = bytes_received - header_len;
-                
                 fwrite(body_start, 1, body_len_in_chunk, fp);
             }
-
             first_chunk = 0;
         } else {
             fwrite(buffer, 1, bytes_received, fp);
