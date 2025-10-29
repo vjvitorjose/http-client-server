@@ -94,7 +94,7 @@ void serve_directory_listing(int client_socket, const char *dir_path, const char
         return;
     }
 
-    send_header(client_socket, "200 OK", "text/html", -1);
+    send_header(client_socket, "200 OK", "text/html; charset=UTF-8", -1);
 
     char buffer[BUFFER_SIZE];
     
